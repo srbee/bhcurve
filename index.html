@@ -1,1 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Iron Hysteresis - BH Curve</title>
+    <style>
+        :root {
+            --bg: #0b0f1a;
+            --card: #161b2c;
+            --h-color: #00f2ff;
+            --b-color: #ff007b;
+            --text: #ffffff;
+        }
 
+        body {
+            margin: 0;
+            padding: 10px;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 480px;
+            background: var(--card);
+            padding: 20px;
+            border-radius: 24px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+            border: 1px solid #2d3548;
+        }
+
+        h2 { text-align: center; margin: 0 0 20px 0; font-weight: 300; letter-spacing: 1px; color: #cbd5e1; }
+
+        .graph-wrapper {
+            width: 100%;
+            background: #000;
+            border-radius: 16px;
+            margin-bottom: 20px;
+            border: 1px solid #1e293b;
+            overflow: visible;
+        }
+
+        svg { width: 100%; height: auto; display: block; overflow: visible; }
+
+        .controls { display: flex; flex-direction: column; gap: 18px; }
+
+        .slider-group { display: flex; flex-direction: column; gap: 6px; }
+
+        .label-row { display: flex; justify-content: space-between; font-size: 0.8rem; font-weight: 800; text-transform: uppercase; }
+
+        input[type=range] {
+            width: 100%;
+            cursor: pointer;
+            accent-color: var(--h-color);
+        }
+        #retentivity { accent-color: var(--b-color); }
+
+        button {
+            padding: 15px;
+            border: none;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #00f2ff, #7000ff);
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            letter-spacing: 1px;
+            transition: all 0.2s;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+        }
+
+        button:active { transform: scale(0.97); filter: brightness(1.2); }
+
+        /* SVG Element Styles */
+        .axis { stroke: #334155; stroke-width: 1.5; }
+        .marker-h { fill: var(--h-color); filter: drop-shadow(0 0 5px var(--h-color)); }
+        .marker-b { fill: var(--b-color); filter: drop-shadow(0 0 5px var(--b-color)); }
+        
+        /* Outline on text for readability against the curve */
+        .anno { 
+            font-size: 13px; font-weight: bold; 
+            paint-order: stroke; stroke: #000; stroke-width: 3px; 
+            stroke-linecap: round; stroke-linejoin: round;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Iron B-H Hysteresis</h2>
+    
+    <div class="graph-wrapper">
+        <svg viewBox="0 0 400 400" id="canvas">
+            <!-- Axes (Safe centered at 200,200) -->
+            <line x1="40" y1="200" x2="360" y2="200" class="axis" />
+            <line x1="200" y1="40" x2="200" y2="360" class="axis" />
+            
+            <!-- Axis Headings -->
+            <text x="365" y="205" fill="#94a3b8" class="anno">H</text>
+            <text x="192" y="30" fill="#94a3b8" class="anno">B</text>
+
+            <!-- Dynamic Intercept Markers -->
+            <circle id="dotHc" r="5" class="marker-h" />
+            <circle id="dotBr" r="5" class="marker-b" />
+
+            <!-- Permanent Labels -->
+            <text id="labelHc" class="anno" fill="var(--h-color)">Coercive force (Hc)</text>
+            <text id="labelBr" class="anno" fill="var(--b-color)">Retentivity (Br)</text>
+
+            <!-- Hysteresis Loop -->
+            <path id="loopPath" fill="none" stroke-width="4" stroke-linecap="round" />
+        </svg>
+    </div>
+
+    <div class="controls">
+        <div class="slider-group">
+            <div class="label-row">
+                <span style="color:var(--h-color)">Coercive Force (Hc)</span>
+                <span id="valHc">25</span>
+            </div>
+            <!-- Max value set to 45 as requested -->
+            <input type="range" id="coercive" min="5" max="45" value="25">
+        </div>
+
+        <div class="slider-group">
+            <div class="label-row">
+                <span style="color:var(--b-color)">Retentivity (Br)</span>
+                <span id="valBr">80</span>
+            </div>
+            <input type="range" id="retentivity" min="30" max="130" value="85">
+        </div>
+
+        <button onclick="restart()">Repeat Animation</button>
+    </div>
+</div>
+
+<script>
+    const path = document.getElementById('loopPath');
+    const hSlider = document.getElementById('coercive');
+    const bSlider = document.getElementById('retentivity');
+    
+    const dotHc = document.getElementById('dotHc');
+    const dotBr = document.getElementById('dotBr');
+    const labelHc = document.getElementById('labelHc');
+    const labelBr = document.getElementById('labelBr');
+
+    let progress = 0;
+    let frame;
+    const segments = 250;
+
+    /**
+     * Physics Logic:
+     * Hmax is scaled to 130 to fit Hc=45 comfortably.
+     * k is calculated so that the curve is forced exactly 
+     * through the user-defined Hc and Br points.
+     */
+    function calculatePoint(t, Hc, Br) {
+        const Hmax = 130; 
+        const Bsat = Br * 1.2; // 20% overhead for saturation tails
+        
+        let H = Hmax * Math.cos(t);
+        let upper = (t <= Math.PI);
+        let shift = upper ? -Hc : Hc;
+        
+        // Exact intercept curvature: B = Bsat * tanh(k * (H + shift))
+        // solving for k at H=0, B=Br: k = atanh(Br/Bsat) / Hc
+        let k = Math.atanh(Br / Bsat) / Hc;
+        
+        let B = Bsat * Math.tanh(k * (H + shift));
+
+        return { x: 200 + H, y: 200 - B };
+    }
+
+    function updateUI() {
+        const Hc = parseFloat(hSlider.value);
+        const Br = parseFloat(bSlider.value);
+
+        document.getElementById('valHc').innerText = Hc;
+        document.getElementById('valBr').innerText = Br;
+
+        // Position the intercept markers
+        // Hc is on the H axis (y=200)
+        dotHc.setAttribute('cx', 200 + Hc);
+        dotHc.setAttribute('cy', 200);
+
+        // Br is on the B axis (x=200)
+        dotBr.setAttribute('cx', 200);
+        dotBr.setAttribute('cy', 200 - Br);
+
+        // Position Labels
+        labelHc.setAttribute('x', 200 + Hc + 10);
+        labelHc.setAttribute('y', 225);
+        
+        labelBr.setAttribute('x', 215);
+        labelBr.setAttribute('y', 200 - Br - 5);
+    }
+
+    function animate() {
+        if (progress > 1) {
+            cancelAnimationFrame(frame);
+            return;
+        }
+
+        const Hc = parseFloat(hSlider.value);
+        const Br = parseFloat(bSlider.value);
+        
+        let d = "";
+        const limit = Math.floor(progress * segments);
+
+        for (let i = 0; i <= limit; i++) {
+            let t = (i / segments) * Math.PI * 2;
+            let p = calculatePoint(t, Hc, Br);
+            if (i === 0) d += `M ${p.x} ${p.y}`;
+            else d += ` L ${p.x} ${p.y}`;
+        }
+
+        path.setAttribute('d', d);
+        // Colorful shifting gradient effect
+        path.setAttribute('stroke', `hsl(${progress * 360}, 100%, 65%)`);
+        
+        progress += 0.008; 
+        frame = requestAnimationFrame(animate);
+    }
+
+    function restart() {
+        cancelAnimationFrame(frame);
+        progress = 0;
+        updateUI();
+        animate();
+    }
+
+    // Input listeners for real-time responsiveness
+    hSlider.oninput = () => { updateUI(); restart(); };
+    bSlider.oninput = () => { updateUI(); restart(); };
+
+    // Initial load
+    window.onload = restart;
+</script>
+
+</body>
+</html>
